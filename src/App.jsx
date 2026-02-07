@@ -31,7 +31,7 @@ import { initMonitoring } from "./monitoring/initMonitoring";
 import ErrorBoundary from "./components/ErrorBoundary";
 
 // Inicializa telemetria (só terá efeito em produção se envs estiverem preenchidas)
-initMonitoring();
+//initMonitoring();
 
 // Layout privado com Sidebar fixo + Header
 function PrivateLayout({ children }) {
