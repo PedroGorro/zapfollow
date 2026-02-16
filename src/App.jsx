@@ -27,7 +27,7 @@ import ResetPassword from "./pages/ResetPassword";
 import { AppStoreProvider, useAppStore } from "./state/AppStore"; // <<< usa useAppStore no layout
 
 // Monitoring (Sentry/LogRocket) + Error Boundary
-import { initMonitoring } from "./monitoring/initMonitoring";
+//import { initMonitoring } from "./monitoring/initMonitoring";
 import ErrorBoundary from "./components/ErrorBoundary";
 
 // Inicializa telemetria (só terá efeito em produção se envs estiverem preenchidas)

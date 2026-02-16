@@ -1,0 +1,4 @@
+project_id = "zapfollow"
+
+[functions.mp-webhook]
+verify_jwt = false

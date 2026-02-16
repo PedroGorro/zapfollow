@@ -4,9 +4,15 @@ import toast from "react-hot-toast";
 import { STATUS_OPERACIONAL } from "../constants/status";
 
 /* Helpers de data (sempre em horário local) */
-function pad2(n) { return String(n).padStart(2, "0"); }
-function localDateStr(d) { return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`; }
-function localTimeStr(d) { return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`; }
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+function localDateStr(d) {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+function localTimeStr(d) {
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
 
 export default function AgendamentoModal({
   open,
@@ -40,7 +46,10 @@ export default function AgendamentoModal({
   const filteredTemplates = useMemo(() => {
     const term = busca.trim().toLowerCase();
     return templates
-      .filter((t) => categoria === "Todas" || (t.categoria || "Sem categoria") === categoria)
+      .filter(
+        (t) =>
+          categoria === "Todas" || (t.categoria || "Sem categoria") === categoria
+      )
       .filter(
         (t) =>
           !term ||
@@ -50,7 +59,8 @@ export default function AgendamentoModal({
   }, [templates, categoria, busca]);
 
   const selectedTemplate = useMemo(
-    () => filteredTemplates.find((t) => String(t.id) === String(templateId)) || null,
+    () =>
+      filteredTemplates.find((t) => String(t.id) === String(templateId)) || null,
     [filteredTemplates, templateId]
   );
 
@@ -64,6 +74,7 @@ export default function AgendamentoModal({
 
     if (agendamento) {
       setContatoId(String(agendamento.contatoId ?? agendamento.contato_id));
+
       const d = new Date(agendamento.quando);
       setData(localDateStr(d));
       setHora(localTimeStr(d));
@@ -71,22 +82,30 @@ export default function AgendamentoModal({
       setStatus(agendamento.status || STATUS_OPERACIONAL[0]);
 
       const tmpl = templates.find(
-        (t) => String(t.id) === String(agendamento.templateId ?? agendamento.template_id)
+        (t) =>
+          String(t.id) ===
+          String(agendamento.templateId ?? agendamento.template_id)
       );
+
       const cat = tmpl?.categoria || "Todas";
       setCategoria(cat);
 
       const idDentroDoFiltro =
-        filteredTemplates.find((t) => String(t.id) === String(tmpl?.id))?.id ?? filteredTemplates[0]?.id ?? "";
+        filteredTemplates.find((t) => String(t.id) === String(tmpl?.id))?.id ??
+        filteredTemplates[0]?.id ??
+        "";
       setTemplateId(idDentroDoFiltro);
+
       setIncluirMensagem(false);
     } else {
       setContatoId(contatos[0] ? String(contatos[0].id) : "");
+
       const now = new Date();
       setData(localDateStr(now));
       setHora(localTimeStr(now));
 
       setCategoria("Todas");
+
       const firstTemplate = templates[0] || null;
       setTemplateId(firstTemplate?.id ?? "");
       setMensagem(firstTemplate?.corpo ?? "Olá {{nome}}!");
@@ -101,12 +120,19 @@ export default function AgendamentoModal({
 
   useEffect(() => {
     if (!open) return;
-    const stillVisible = filteredTemplates.some((t) => String(t.id) === String(templateId));
+
+    const stillVisible = filteredTemplates.some(
+      (t) => String(t.id) === String(templateId)
+    );
+
     if (!stillVisible) {
       const novoId = filteredTemplates[0]?.id ?? "";
       setTemplateId(novoId);
+
       if (incluirMensagem) {
-        const novoTemplate = filteredTemplates.find((t) => String(t.id) === String(novoId));
+        const novoTemplate = filteredTemplates.find(
+          (t) => String(t.id) === String(novoId)
+        );
         if (novoTemplate?.corpo) setMensagem(novoTemplate.corpo);
       }
     }
@@ -130,28 +156,38 @@ export default function AgendamentoModal({
       setErro("Preencha contato, data, hora e mensagem.");
       return;
     }
+
     const quando = new Date(`${data}T${hora}:00`); // local
 
+    // ✅ IMPORTANTE:
+    // - contatoId agora é UUID (string) -> NÃO converter para Number.
+    // - Incluo campos snake_case para compatibilidade com o DB novo (contato_id/template_id/created_at/updated_at).
     const payload = {
       ...(agendamento?.id ? { id: agendamento.id } : {}),
-      contatoId: Number(contatoId),
-      quando: quando.toISOString(),
-      templateId: selectedTemplate ? selectedTemplate.id : null,
-      mensagem,
-      status,
+
+      // camelCase (seu app já usa)
+      contatoId: String(contatoId),
+      templateId: selectedTemplate ? String(selectedTemplate.id) : null,
       createdAt: agendamento?.createdAt ?? new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+
+      // snake_case (DB)
+      contato_id: String(contatoId),
+      template_id: selectedTemplate ? String(selectedTemplate.id) : null,
+      created_at: agendamento?.createdAt ?? new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+
+      quando: quando.toISOString(),
+      mensagem,
+      status,
     };
 
     try {
-      await toast.promise(
-        Promise.resolve(onSave(payload)),
-        {
-          loading: agendamento ? "Atualizando agendamento..." : "Criando agendamento...",
-          success: agendamento ? "Agendamento atualizado!" : "Agendamento criado!",
-          error: "Erro ao salvar agendamento.",
-        }
-      );
+      await toast.promise(Promise.resolve(onSave(payload)), {
+        loading: agendamento ? "Atualizando agendamento..." : "Criando agendamento...",
+        success: agendamento ? "Agendamento atualizado!" : "Agendamento criado!",
+        error: "Erro ao salvar agendamento.",
+      });
       onClose();
     } catch (err) {
       console.error(err);
@@ -181,20 +217,26 @@ export default function AgendamentoModal({
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div className="sm:col-span-1">
-              <label className="mb-1 block text-sm font-medium text-gray-700">Contato</label>
+              <label className="mb-1 block text-sm font-medium text-gray-700">
+                Contato
+              </label>
               <select
                 value={contatoId}
                 onChange={(e) => setContatoId(e.target.value)}
                 className="w-full rounded-xl border px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
               >
                 {contatos.map((c) => (
-                  <option key={c.id} value={c.id}>{c.nome}</option>
+                  <option key={c.id} value={c.id}>
+                    {c.nome}
+                  </option>
                 ))}
               </select>
             </div>
 
             <div className="sm:col-span-1">
-              <label className="mb-1 block text-sm font-medium text-gray-700">Data</label>
+              <label className="mb-1 block text-sm font-medium text-gray-700">
+                Data
+              </label>
               <input
                 type="date"
                 value={data}
@@ -204,7 +246,9 @@ export default function AgendamentoModal({
             </div>
 
             <div className="sm:col-span-1">
-              <label className="mb-1 block text-sm font-medium text-gray-700">Hora</label>
+              <label className="mb-1 block text-sm font-medium text-gray-700">
+                Hora
+              </label>
               <input
                 type="time"
                 value={hora}
@@ -216,22 +260,28 @@ export default function AgendamentoModal({
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div>
-              <label className="mb-1 block text-sm font-medium text-gray-700">Categoria</label>
+              <label className="mb-1 block text-sm font-medium text-gray-700">
+                Categoria
+              </label>
               <select
                 value={categoria}
                 onChange={(e) => setCategoria(e.target.value)}
                 className="w-full rounded-xl border px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
               >
                 {categorias.map((c) => (
-                  <option key={c} value={c}>{c}</option>
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
                 ))}
               </select>
             </div>
 
             <div className="sm:col-span-2">
               <label className="mb-1 block text-sm font-medium text-gray-700">
-                Template <span className="text-gray-500">(filtrado pela categoria)</span>
+                Template{" "}
+                <span className="text-gray-500">(filtrado pela categoria)</span>
               </label>
+
               <div className="flex gap-2">
                 <select
                   value={templateId}
@@ -240,10 +290,12 @@ export default function AgendamentoModal({
                 >
                   {filteredTemplates.map((t) => (
                     <option key={t.id} value={t.id}>
-                      {t.categoria ? `${t.categoria} — ` : ""}{t.titulo}
+                      {t.categoria ? `${t.categoria} — ` : ""}
+                      {t.titulo}
                     </option>
                   ))}
                 </select>
+
                 <input
                   value={busca}
                   onChange={(e) => setBusca(e.target.value)}
@@ -256,9 +308,13 @@ export default function AgendamentoModal({
                 <input
                   type="checkbox"
                   checked={incluirMensagem}
-                  onChange={(e) => handleToggleIncluirMensagem(e.target.checked)}
+                  onChange={(e) =>
+                    handleToggleIncluirMensagem(e.target.checked)
+                  }
                 />
-                <span className="select-none">Atualizar mensagem ao trocar template</span>
+                <span className="select-none">
+                  Atualizar mensagem ao trocar template
+                </span>
               </label>
             </div>
           </div>
@@ -267,7 +323,11 @@ export default function AgendamentoModal({
             <label className="mb-1 block text-sm font-medium text-gray-700">
               Mensagem{" "}
               <span className="text-gray-500">
-                (use <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-xs">{"{{nome}}"}</code>)
+                (use{" "}
+                <code className="rounded bg-gray-100 px-1 py-0.5 font-mono text-xs">
+                  {"{{nome}}"}
+                </code>
+                )
               </span>
             </label>
             <textarea
@@ -281,17 +341,22 @@ export default function AgendamentoModal({
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div>
-              <label className="mb-1 block text-sm font-medium text-gray-700">Status (operacional)</label>
+              <label className="mb-1 block text-sm font-medium text-gray-700">
+                Status (operacional)
+              </label>
               <select
                 value={status}
                 onChange={(e) => setStatus(e.target.value)}
                 className="w-full rounded-xl border px-3 py-2 bg-white focus:outline-none focus:ring-2 focus:ring-purple-400"
               >
                 {STATUS_OPERACIONAL.map((s) => (
-                  <option key={s} value={s}>{s}</option>
+                  <option key={s} value={s}>
+                    {s}
+                  </option>
                 ))}
               </select>
             </div>
+
             <div className="sm:col-span-2 rounded-xl bg-gray-50 p-3">
               <div className="mb-1 text-xs text-gray-500">Pré-visualização</div>
               <div className="whitespace-pre-wrap">{preview}</div>
