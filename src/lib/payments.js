@@ -3,62 +3,49 @@ import { supabase } from "./supabaseClient";
 
 /**
  * Abre o checkout do Mercado Pago (Edge Function)
- * - Envia Authorization (JWT do usuário) + apikey (anon key do projeto)
+ * - Usa supabase.functions.invoke (mais seguro que fetch manual)
+ * - Garante refresh do token antes de chamar
  * - Edge Function retorna { init_point } ou { alreadyActive, redirect }
  */
 export async function startProCheckout() {
-  const { data: { session }, error: sessionErr } = await supabase.auth.getSession();
-  if (sessionErr) throw sessionErr;
-  if (!session) throw new Error("Faça login para continuar.");
+  // 1) garante que existe sessão
+  const { data: sess0, error: sessErr0 } = await supabase.auth.getSession();
+  if (sessErr0) throw sessErr0;
+  if (!sess0?.session) throw new Error("Faça login para continuar.");
 
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-  const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+  // 2) força refresh (evita JWT expirado/antigo)
+  const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
+  if (refreshErr) {
+    // se refresh falhar, é melhor pedir login de novo
+    throw new Error("Sua sessão expirou. Faça login novamente.");
+  }
+  if (!refreshed?.session) throw new Error("Faça login para continuar.");
 
-  if (!supabaseUrl) throw new Error("VITE_SUPABASE_URL não configurado.");
-  if (!anonKey) throw new Error("VITE_SUPABASE_ANON_KEY não configurado.");
-
-  const url = `${supabaseUrl}/functions/v1/create-checkout`;
-
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      // JWT do usuário logado:
-      Authorization: `Bearer ${session.access_token}`,
-      // Necessário para chamar Edge Functions:
-      apikey: anonKey,
-    },
-    body: JSON.stringify({ plan: "pro" }),
+  // 3) chama a function via invoke (envia Authorization corretamente)
+  const { data, error } = await supabase.functions.invoke("create-checkout", {
+    body: { plan: "pro" },
   });
 
-  // Tenta ler JSON mesmo em erro
-  let json = null;
-  try {
-    json = await resp.json();
-  } catch {
-    // pode vir vazio em alguns cenários
-  }
-
-  if (!resp.ok) {
+  if (error) {
+    // quando a function responde 401, normalmente vem aqui
     const msg =
-      json?.error ||
-      json?.message ||
-      `Falha ao iniciar checkout (HTTP ${resp.status})`;
+      error?.message ||
+      (typeof error === "string" ? error : null) ||
+      "Falha ao iniciar checkout.";
     throw new Error(msg);
   }
 
   // Usuário já é Pro? só redireciona pro app
-  if (json?.alreadyActive && json?.redirect) {
-    window.location.href = json.redirect;
+  if (data?.alreadyActive && data?.redirect) {
+    window.location.href = data.redirect;
     return;
   }
 
-  if (!json?.init_point) {
+  if (!data?.init_point) {
     throw new Error("Resposta inválida: init_point não retornado.");
   }
 
-  // Abre o Mercado Pago
-  window.location.href = json.init_point;
+  window.location.href = data.init_point;
 }
 
 /**
@@ -67,6 +54,9 @@ export async function startProCheckout() {
  */
 export async function waitForProPlan({ timeoutMs = 120000, intervalMs = 4000 } = {}) {
   const started = Date.now();
+
+  // (opcional) refresh também aqui, porque o usuário pode voltar do MP e a sessão pode estar “meia-bamba”
+  await supabase.auth.refreshSession().catch(() => null);
 
   const { data: { user }, error: userErr } = await supabase.auth.getUser();
   if (userErr) return { ok: false, reason: "invalid-jwt" };
