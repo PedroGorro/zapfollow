@@ -52,15 +52,10 @@ export default function UpgradeModal({
       setLoading(true);
       await startProCheckout();
     } catch (e) {
-      const msg = e?.message || "Erro ao abrir o checkout";
-
-      // melhora a mensagem pro usuário final sem perder detalhe no console
-      if (String(msg).toLowerCase().includes("jwt")) {
-        toast.error("Falha de autenticação. Faça logout e login novamente.");
-      } else {
-        toast.error(msg);
-      }
-
+      const msg =
+        e?.message ||
+        "Falha de autenticação (401). Normalmente é token inválido/ambiente mismatch. Veja logs do create-checkout.";
+      toast.error(msg);
       setLoading(false);
     }
   }
@@ -71,11 +66,7 @@ export default function UpgradeModal({
       <div className="relative z-[61] w-full max-w-xl bg-white rounded-2xl shadow-lg p-6">
         <div className="flex items-center justify-between mb-4">
           <h3 className="text-2xl font-extrabold text-gray-900">Faça upgrade para o Pro</h3>
-          <button
-            className="text-gray-400 hover:text-gray-600"
-            aria-label="Fechar"
-            onClick={onClose}
-          >
+          <button className="text-gray-400 hover:text-gray-600" aria-label="Fechar" onClick={onClose}>
             ✕
           </button>
         </div>

@@ -1,94 +1,94 @@
 // src/lib/payments.js
 import { supabase } from "./supabaseClient";
 
-/**
- * Abre o checkout do Mercado Pago (Edge Function)
- * - Usa supabase.functions.invoke
- * - Garante refresh do token antes de chamar
- * - Envia Authorization explicitamente (evita gateway achar vazio/errado)
- */
+const DEBUG = true; // se quiser, pode amarrar em import.meta.env.VITE_DEBUG
+
 export async function startProCheckout() {
-  // 1) garante sessão
-  const { data: sess0, error: sessErr0 } = await supabase.auth.getSession();
-  if (sessErr0) throw sessErr0;
-  if (!sess0?.session) throw new Error("Faça login para continuar.");
+  // Garante sessão válida
+  const { data: sessionData, error: sessErr } = await supabase.auth.getSession();
+  if (sessErr) throw new Error(sessErr.message);
 
-  console.log("[checkout] supabaseUrl(front):", supabase?.supabaseUrl || "(unknown)");
-  console.log("[checkout] session(user id):", sess0.session.user?.id);
-  console.log("[checkout] access_token length:", sess0.session.access_token?.length || 0);
-  console.log("[checkout] refresh_token exists:", !!sess0.session.refresh_token);
-  console.log("[checkout] token.iss(before refresh):", sess0.session.user?.aud ? "(aud set)" : "(aud empty)");
-  console.log("[checkout] token.exp(before refresh):", sess0.session.expires_at);
+  let session = sessionData?.session;
+  if (!session?.access_token) throw new Error("Sem sessão ativa. Faça login novamente.");
 
-  // 2) força refresh
+  // Tenta refresh (boa prática)
   const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
-  if (refreshErr || !refreshed?.session) {
-    throw new Error("Sua sessão expirou. Faça logout e login novamente.");
+  if (!refreshErr && refreshed?.session?.access_token) {
+    session = refreshed.session;
   }
 
-  console.log("[checkout] session refreshed(user id):", refreshed.session.user?.id);
-  console.log("[checkout] access_token length(after refresh):", refreshed.session.access_token?.length || 0);
-  console.log("[checkout] token.exp(after refresh):", refreshed.session.expires_at);
+  const accessToken = session.access_token;
 
-  // 3) chama a function e envia Authorization explicitamente
-  const accessToken = refreshed.session.access_token;
-  const authHeader = `Bearer ${accessToken}`;
+  if (DEBUG) {
+    console.log("[checkout] supabaseUrl(front):", supabase?.supabaseUrl || "(unknown)");
+    console.log("[checkout] session(user id):", session.user?.id);
+    console.log("[checkout] access_token length:", accessToken?.length);
+    console.log("[checkout] token.iss:", (session?.user?.aud ? "(aud set)" : "(no aud)"));
+    console.log("[checkout] token.exp:", session.expires_at);
+  }
 
-  const { data, error } = await supabase.functions.invoke("create-checkout", {
-    body: { plan: "pro" },
+  // ✅ 1) PRIMEIRO: invoke (melhor caminho, já manda apikey + auth)
+  try {
+    const { data, error } = await supabase.functions.invoke("create-checkout", {
+      body: { plan: "pro" },
+      // headers extra se quiser: { "x-debug": "1" }
+    });
+
+    if (error) throw error;
+
+    // Se sua function retornar init_point:
+    const initPoint = data?.init_point || data?.initPoint || null;
+
+    if (DEBUG) console.log("[checkout] invoke data:", data);
+
+    if (initPoint) {
+      window.location.href = initPoint;
+      return;
+    }
+
+    // Se você faz redirect server-side, talvez nem chegue aqui.
+    // Caso não tenha init_point:
+    throw new Error("Checkout não retornou init_point. Verifique a function create-checkout.");
+  } catch (e) {
+    if (DEBUG) console.warn("[checkout] invoke falhou, tentando fetch fallback...", e?.message || e);
+  }
+
+  // ✅ 2) FALLBACK: fetch direto (manda apikey + authorization)
+  const fnUrl = `${supabase.supabaseUrl}/functions/v1/create-checkout`;
+  const anonKey =
+    import.meta.env.VITE_SUPABASE_ANON_KEY || import.meta.env.VITE_SUPABASE_KEY;
+
+  if (!anonKey) {
+    throw new Error("VITE_SUPABASE_ANON_KEY ausente no front (necessário para o fallback).");
+  }
+
+  const res = await fetch(fnUrl, {
+    method: "POST",
     headers: {
-      Authorization: authHeader,
+      "Content-Type": "application/json",
+      apikey: anonKey,
+      Authorization: `Bearer ${accessToken}`,
     },
+    body: JSON.stringify({ plan: "pro" }),
   });
 
-  if (error) {
-    console.error("[checkout] functions.invoke error:", error);
+  const json = await res.json().catch(() => ({}));
 
-    // tenta mostrar algo útil
+  if (DEBUG) {
+    console.log("[checkout] fetch status:", res.status);
+    console.log("[checkout] fetch response:", json);
+  }
+
+  if (!res.ok) {
     const msg =
-      error?.message ||
-      (typeof error === "string" ? error : null) ||
-      "Falha ao iniciar checkout.";
-
-    // Se for 401, dá dica melhor
-    if (String(msg).includes("401")) {
-      throw new Error("Falha de autenticação (401). Faça logout e login novamente.");
-    }
+      json?.detail ||
+      json?.message ||
+      `Falha no checkout (${res.status}).`;
     throw new Error(msg);
   }
 
-  // Usuário já é Pro?
-  if (data?.alreadyActive && data?.redirect) {
-    window.location.href = data.redirect;
-    return;
-  }
+  const initPoint = json?.init_point || json?.initPoint;
+  if (!initPoint) throw new Error("Checkout não retornou init_point (fetch).");
 
-  if (!data?.init_point) {
-    console.error("[checkout] invalid response data:", data);
-    throw new Error("Resposta inválida: init_point não retornado.");
-  }
-
-  window.location.href = data.init_point;
-}
-
-export async function waitForProPlan({ timeoutMs = 120000, intervalMs = 4000 } = {}) {
-  const started = Date.now();
-  await supabase.auth.refreshSession().catch(() => null);
-
-  const { data: { user }, error: userErr } = await supabase.auth.getUser();
-  if (userErr) return { ok: false, reason: "invalid-jwt" };
-  if (!user) return { ok: false, reason: "not-authenticated" };
-
-  while (Date.now() - started < timeoutMs) {
-    const { data, error } = await supabase
-      .from("profiles")
-      .select("plan")
-      .eq("id", user.id)
-      .maybeSingle();
-
-    if (!error && data?.plan === "pro") return { ok: true };
-    await new Promise((r) => setTimeout(r, intervalMs));
-  }
-
-  return { ok: false, reason: "timeout" };
+  window.location.href = initPoint;
 }

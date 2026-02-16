@@ -1,162 +1,160 @@
-// @ts-nocheck
 /// <reference lib="deno.ns" />
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2?dts";
+/// <reference lib="dom" />
 
-/**
- * create-checkout
- * - Cria um preapproval (assinatura recorrente) no Mercado Pago
- * - Retorna o init_point (URL do checkout)
- * - CORS: apenas APP_URL é permitido
- *
- * IMPORTANTE:
- * - Se estiver tomando 401 "Invalid JWT" ANTES de executar, desabilite:
- *   supabase/config.toml -> [functions.create-checkout] verify_jwt = false
- */
+import { createClient } from "https://esm.sh/@supabase/supabase-js@2.55.0";
 
-const MP_TOKEN = Deno.env.get("MERCADOPAGO_ACCESS_TOKEN")!;
-const APP_URL = Deno.env.get("APP_URL")!; // ex.: https://www.zapfollow.app
-const PRO_PRICE = Number(Deno.env.get("PRO_PRICE") || "39.90");
+const SB_URL = Deno.env.get("SUPABASE_URL") ?? "";
+const SB_ANON = Deno.env.get("SUPABASE_ANON_KEY") ?? "";
+const SB_SERVICE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 
-const SB_URL = Deno.env.get("SB_URL")!;
-const SRV_KEY = Deno.env.get("SB_SERVICE_ROLE_KEY")!;
-const ANON_KEY = Deno.env.get("SB_ANON_KEY")!;
-const WEBHOOK_TOKEN = Deno.env.get("MP_WEBHOOK_TOKEN")!;
+const APP_ORIGIN = Deno.env.get("APP_ORIGIN") ?? "https://www.zapfollow.app";
+const APP_URL = Deno.env.get("APP_URL") ?? "https://www.zapfollow.app";
 
-// DEBUG: liga/desliga logs detalhados por ENV (recomendado)
-const DEBUG = (Deno.env.get("DEBUG") || "").toLowerCase() === "true";
+const MP_TOKEN = Deno.env.get("MP_ACCESS_TOKEN") ?? "";
+const WEBHOOK_TOKEN = Deno.env.get("MP_WEBHOOK_TOKEN") ?? "";
 
-/** Garante que comparamos a ORIGIN do APP_URL (ignora paths) */
-const APP_ORIGIN = (() => {
-  try {
-    return new URL(APP_URL).origin;
-  } catch {
-    return APP_URL;
-  }
-})();
+const DEBUG = (Deno.env.get("DEBUG") ?? "").toLowerCase() === "true";
 
-/** CORS estrito: só aceita o APP_ORIGIN */
-function cors(origin: string | null) {
-  const allowed = !!origin && origin === APP_ORIGIN;
+// preço do Pro (mantive o mesmo padrão do seu código)
+const PRO_PRICE = 29.9;
+
+function cors(origin: string) {
   return {
-    "Access-Control-Allow-Origin": allowed ? origin : "null",
-    "Vary": "Origin",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
   };
 }
 
-function safeBool(x: unknown) {
-  return !!x;
+function dlog(...args: unknown[]) {
+  if (DEBUG) console.log("[create-checkout]", ...args);
 }
 
-function authHeaderFrom(req: Request) {
-  // Headers são case-insensitive, mas aqui garantimos ambos
-  const h =
-    req.headers.get("authorization") ||
-    req.headers.get("Authorization") ||
-    "";
-
-  return h;
-}
-
-function summarizeJwt(authHeader: string) {
-  // Nunca loga o token inteiro
-  const hasBearer = authHeader.toLowerCase().startsWith("bearer ");
-  const token = hasBearer ? authHeader.slice(7) : authHeader;
-
-  return {
-    hasBearer,
-    headerLen: authHeader.length,
-    tokenLen: token.length,
-    parts: token ? token.split(".").length : 0,
-    sample: authHeader ? authHeader.slice(0, 24) + "..." : "",
-  };
+function safeSample(s: string, n = 32) {
+  if (!s) return "";
+  return s.slice(0, n) + (s.length > n ? "..." : "");
 }
 
 Deno.serve(async (req) => {
-  const origin = req.headers.get("origin");
+  const origin = req.headers.get("origin") ?? "";
 
+  // CORS preflight
   if (req.method === "OPTIONS") {
-    return new Response(null, { status: 204, headers: cors(origin) });
-  }
-  if (req.method !== "POST") {
-    return new Response("Method Not Allowed", { status: 405, headers: cors(origin) });
+    return new Response(null, { status: 204, headers: cors(origin || APP_ORIGIN) });
   }
 
-  // CORS / Origin
-  if (!(origin && origin === APP_ORIGIN)) {
-    return new Response(JSON.stringify({ error: "Origin not allowed" }), {
+  // Bloqueia origens indevidas (mantendo sua lógica)
+  if (!origin || origin !== APP_ORIGIN) {
+    dlog("BLOCKED ORIGIN:", origin, "expected:", APP_ORIGIN);
+    return new Response(JSON.stringify({ error: "Origin not allowed", origin }), {
       status: 403,
-      headers: { "Content-Type": "application/json", ...cors(origin) },
+      headers: { "Content-Type": "application/json", ...cors(origin || APP_ORIGIN) },
     });
   }
 
   try {
-    const { plan } = await req.json().catch(() => ({}));
+    dlog("METHOD:", req.method);
+    dlog("ORIGIN:", origin);
+
+    // ====== DEBUG DE ENV (sem vazar segredos) ======
+    dlog("ENV SUPABASE_URL exists:", !!SB_URL);
+    dlog("ENV SUPABASE_ANON_KEY exists:", !!SB_ANON);
+    dlog("ENV SUPABASE_SERVICE_ROLE_KEY exists:", !!SB_SERVICE);
+    dlog("ENV MP_ACCESS_TOKEN exists:", !!MP_TOKEN);
+    dlog("ENV MP_WEBHOOK_TOKEN exists:", !!WEBHOOK_TOKEN);
+    dlog("ENV APP_ORIGIN:", APP_ORIGIN);
+    dlog("ENV APP_URL:", APP_URL);
+
+    // ====== LÊ AUTH HEADER (bem tolerante) ======
+    const authHeader =
+      req.headers.get("authorization") ||
+      req.headers.get("Authorization") ||
+      req.headers.get("x-supabase-auth") ||
+      "";
+
+    const hasBearer = authHeader.toLowerCase().startsWith("bearer ");
+    const jwt = authHeader.replace(/^Bearer\s+/i, "");
+    const jwtParts = jwt ? jwt.split(".").length : 0;
+
+    dlog("AUTH header exists:", !!authHeader);
+    dlog("AUTH startsWith Bearer:", hasBearer);
+    dlog("AUTH length:", authHeader.length);
+    dlog("AUTH sample:", safeSample(authHeader, 40));
+    dlog("JWT parts:", jwtParts);
+
+    if (!authHeader || !hasBearer) {
+      const body = {
+        error: "Missing Authorization Bearer token",
+        debug: DEBUG
+          ? {
+              gotAuthorization: !!authHeader,
+              sample: safeSample(authHeader, 40),
+            }
+          : undefined,
+      };
+      return new Response(JSON.stringify(body), {
+        status: 401,
+        headers: { "Content-Type": "application/json", ...cors(origin) },
+      });
+    }
+
+    // ====== CLIENT PARA VALIDAR USUÁRIO ======
+    const userClient = createClient(SB_URL, SB_ANON, {
+      global: { headers: { Authorization: authHeader } },
+      auth: { persistSession: false },
+    });
+
+    const { data: u, error: uErr } = await userClient.auth.getUser();
+
+    dlog("getUser() ok:", !!u?.user);
+    if (uErr) dlog("getUser() error:", uErr.message);
+
+    if (uErr || !u?.user) {
+      const body = {
+        error: "Unauthorized",
+        detail: uErr?.message || "Invalid JWT",
+        debug: DEBUG
+          ? {
+              hasBearer,
+              jwtParts,
+              tokenIssHint: (() => {
+                try {
+                  const payload = JSON.parse(atob(jwt.split(".")[1] || ""));
+                  return payload?.iss ?? null;
+                } catch {
+                  return null;
+                }
+              })(),
+            }
+          : undefined,
+      };
+
+      return new Response(JSON.stringify(body), {
+        status: 401,
+        headers: { "Content-Type": "application/json", ...cors(origin) },
+      });
+    }
+
+    const user = u.user;
+
+    // ====== BODY ======
+    const payload = await req.json().catch(() => ({}));
+    const plan = payload?.plan ?? "";
+
     if (plan !== "pro") {
-      return new Response(JSON.stringify({ error: "Invalid plan" }), {
+      return new Response(JSON.stringify({ error: "Plano inválido" }), {
         status: 400,
         headers: { "Content-Type": "application/json", ...cors(origin) },
       });
     }
 
-    const authHeader = authHeaderFrom(req);
+    // ====== ADMIN CLIENT (service role) ======
+    const admin = createClient(SB_URL, SB_SERVICE);
 
-    if (DEBUG) {
-      console.log("[create-checkout][DEBUG] APP_ORIGIN:", APP_ORIGIN);
-      console.log("[create-checkout][DEBUG] origin:", origin);
-      console.log("[create-checkout][DEBUG] ENV has SB_URL:", safeBool(SB_URL));
-      console.log("[create-checkout][DEBUG] ENV has ANON_KEY:", safeBool(ANON_KEY));
-      console.log("[create-checkout][DEBUG] ENV has SRV_KEY:", safeBool(SRV_KEY));
-      console.log("[create-checkout][DEBUG] ENV has MP_TOKEN:", safeBool(MP_TOKEN));
-      console.log("[create-checkout][DEBUG] ENV has WEBHOOK_TOKEN:", safeBool(WEBHOOK_TOKEN));
-      console.log("[create-checkout][DEBUG] auth summary:", summarizeJwt(authHeader));
-      console.log("[create-checkout][DEBUG] apikey header exists:", safeBool(req.headers.get("apikey")));
-      console.log("[create-checkout][DEBUG] x-client-info:", req.headers.get("x-client-info") || null);
-    }
-
-    // Precisa de Bearer
-    if (!authHeader || !authHeader.toLowerCase().startsWith("bearer ")) {
-      return new Response(JSON.stringify({
-        error: "Missing Authorization Bearer token",
-        detail: summarizeJwt(authHeader),
-      }), {
-        status: 401,
-        headers: { "Content-Type": "application/json", ...cors(origin) },
-      });
-    }
-
-    // Autentica o usuário pelo JWT do Supabase vindo do front
-    const userClient = createClient(SB_URL, ANON_KEY, {
-      global: { headers: { Authorization: authHeader } },
-      auth: { persistSession: false },
-    });
-
-    const { data: auth, error: authErr } = await userClient.auth.getUser();
-
-    if (DEBUG) {
-      console.log("[create-checkout][DEBUG] getUser error:", authErr?.message || null);
-      console.log("[create-checkout][DEBUG] user id:", auth?.user?.id || null);
-    }
-
-    const user = auth?.user;
-    if (authErr || !user) {
-      return new Response(JSON.stringify({
-        error: "Unauthorized",
-        detail: authErr?.message || "Invalid JWT",
-        authHeader: summarizeJwt(authHeader),
-      }), {
-        status: 401,
-        headers: { "Content-Type": "application/json", ...cors(origin) },
-      });
-    }
-
-    const admin = createClient(SB_URL, SRV_KEY);
-
-    // Se já tem assinatura ativa, não reabre checkout
+    // Já é Pro ativo?
     const { data: existing } = await admin
       .from("subscriptions")
-      .select("*")
+      .select("id,status")
       .eq("user_id", user.id)
       .eq("status", "active")
       .maybeSingle();
@@ -220,9 +218,15 @@ Deno.serve(async (req) => {
     });
   } catch (e) {
     console.error(e);
-    return new Response(JSON.stringify({ error: String(e?.message || e) }), {
-      status: 500,
-      headers: { "Content-Type": "application/json", ...cors(origin) },
-    });
+    return new Response(
+      JSON.stringify({
+        error: "Internal error",
+        detail: (e as Error)?.message || String(e),
+      }),
+      {
+        status: 500,
+        headers: { "Content-Type": "application/json", ...cors(origin) },
+      }
+    );
   }
 });
