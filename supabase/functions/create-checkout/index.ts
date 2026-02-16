@@ -93,6 +93,24 @@ Deno.serve(async (req) => {
     const authHeader =
       req.headers.get("authorization") || req.headers.get("Authorization") || "";
 
+
+    // --- PROVA DEFINITIVA (debug) ---
+console.log("ENV SUPABASE_URL:", SUPABASE_URL);
+console.log("ENV has ANON:", !!SUPABASE_ANON_KEY, "has SRV:", !!SUPABASE_SERVICE_ROLE_KEY);
+
+console.log(
+  "AUTH header starts with Bearer:",
+  authHeader.toLowerCase().startsWith("bearer ")
+);
+console.log("AUTH header length:", authHeader.length);
+console.log("AUTH sample:", authHeader.slice(0, 30)); // só um pedacinho
+
+const jwt = authHeader.replace(/^Bearer\s+/i, "");
+console.log("JWT parts:", jwt.split(".").length); // precisa dar 3
+// --- fim debug ---
+
+
+
     if (!authHeader || !authHeader.toLowerCase().startsWith("bearer ")) {
       return new Response(JSON.stringify({ error: "Missing Authorization Bearer token" }), {
         status: 401,
