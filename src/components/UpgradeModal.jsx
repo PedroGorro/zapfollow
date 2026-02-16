@@ -50,10 +50,17 @@ export default function UpgradeModal({
   async function handleUpgrade() {
     try {
       setLoading(true);
-      await startProCheckout(); // redireciona se der certo
+      await startProCheckout();
     } catch (e) {
       const msg = e?.message || "Erro ao abrir o checkout";
-      toast.error(msg);
+
+      // melhora a mensagem pro usuário final sem perder detalhe no console
+      if (String(msg).toLowerCase().includes("jwt")) {
+        toast.error("Falha de autenticação. Faça logout e login novamente.");
+      } else {
+        toast.error(msg);
+      }
+
       setLoading(false);
     }
   }
@@ -68,7 +75,6 @@ export default function UpgradeModal({
             className="text-gray-400 hover:text-gray-600"
             aria-label="Fechar"
             onClick={onClose}
-            disabled={loading}
           >
             ✕
           </button>
@@ -84,8 +90,8 @@ export default function UpgradeModal({
           ) : (
             <>
               Você atingiu os limites do plano <span className="font-semibold">Free</span>. O Pro
-              libera contatos, agendamentos e templates{" "}
-              <span className="font-semibold">ilimitados</span>, além de suporte prioritário.
+              libera contatos, agendamentos e templates <span className="font-semibold">ilimitados</span>,
+              além de suporte prioritário.
             </>
           )}
         </p>
@@ -125,13 +131,15 @@ export default function UpgradeModal({
         <div className="flex items-center justify-end gap-3">
           <button
             onClick={onClose}
-            disabled={loading}
             className="px-4 py-2 rounded-xl border border-gray-200 hover:bg-gray-100 text-gray-700 text-sm"
           >
             Agora não
           </button>
           <button
-            onClick={handleUpgrade}
+            onClick={async () => {
+              onClose();
+              await handleUpgrade();
+            }}
             disabled={loading}
             className={`px-4 py-2 rounded-xl text-white text-sm font-medium h-10 ${
               loading ? "bg-purple-400 cursor-wait" : "bg-purple-600 hover:bg-purple-700"

@@ -2,124 +2,77 @@
 import { supabase } from "./supabaseClient";
 
 /**
- * Decodifica o payload do JWT (sem validar assinatura)
- * Serve só para debug: ver iss, exp, sub etc.
- */
-function decodeJwtPayload(token) {
-  try {
-    const part = token.split(".")[1];
-    if (!part) return null;
-    const base64 = part.replace(/-/g, "+").replace(/_/g, "/");
-    const json = decodeURIComponent(
-      atob(base64)
-        .split("")
-        .map((c) => "%" + ("00" + c.charCodeAt(0).toString(16)).slice(-2))
-        .join("")
-    );
-    return JSON.parse(json);
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Abre o checkout do Mercado Pago (Edge Function)
  * - Usa supabase.functions.invoke
- * - Faz refresh antes de chamar
- * - Retorna { init_point } ou { alreadyActive, redirect }
+ * - Garante refresh do token antes de chamar
+ * - Envia Authorization explicitamente (evita gateway achar vazio/errado)
  */
 export async function startProCheckout() {
-  // DEBUG: qual projeto o front está usando?
-  try {
-    const url = supabase?.supabaseUrl;
-    console.log("[checkout] supabaseUrl(front):", url);
-  } catch (e) {
-    console.log("[checkout] supabaseUrl(front): (não disponível)", e);
-  }
-
-  // 1) garante que existe sessão
+  // 1) garante sessão
   const { data: sess0, error: sessErr0 } = await supabase.auth.getSession();
   if (sessErr0) throw sessErr0;
   if (!sess0?.session) throw new Error("Faça login para continuar.");
 
-  // DEBUG: loga infos da sessão ATUAL
+  console.log("[checkout] supabaseUrl(front):", supabase?.supabaseUrl || "(unknown)");
   console.log("[checkout] session(user id):", sess0.session.user?.id);
-  console.log("[checkout] access_token length:", sess0.session.access_token?.length);
+  console.log("[checkout] access_token length:", sess0.session.access_token?.length || 0);
   console.log("[checkout] refresh_token exists:", !!sess0.session.refresh_token);
+  console.log("[checkout] token.iss(before refresh):", sess0.session.user?.aud ? "(aud set)" : "(aud empty)");
+  console.log("[checkout] token.exp(before refresh):", sess0.session.expires_at);
 
-  const payload0 = decodeJwtPayload(sess0.session.access_token || "");
-  console.log("[checkout] token.iss(before refresh):", payload0?.iss);
-  console.log("[checkout] token.exp(before refresh):", payload0?.exp);
-
-  // 2) força refresh (evita JWT expirado/antigo)
+  // 2) força refresh
   const { data: refreshed, error: refreshErr } = await supabase.auth.refreshSession();
-
-  if (refreshErr) {
-    console.error("[checkout] refreshSession error:", refreshErr);
-    // dica forte quando o refresh token é inválido/velho
-    throw new Error(
-      "Sua sessão está inválida/antiga. Faça logout e login novamente (ou limpe o armazenamento do site)."
-    );
+  if (refreshErr || !refreshed?.session) {
+    throw new Error("Sua sessão expirou. Faça logout e login novamente.");
   }
-  if (!refreshed?.session) throw new Error("Faça login para continuar.");
 
-  // DEBUG: loga infos da sessão NOVA
   console.log("[checkout] session refreshed(user id):", refreshed.session.user?.id);
-  console.log("[checkout] access_token length(after refresh):", refreshed.session.access_token?.length);
+  console.log("[checkout] access_token length(after refresh):", refreshed.session.access_token?.length || 0);
+  console.log("[checkout] token.exp(after refresh):", refreshed.session.expires_at);
 
-  const payload1 = decodeJwtPayload(refreshed.session.access_token || "");
-  console.log("[checkout] token.iss(after refresh):", payload1?.iss);
-  console.log("[checkout] token.exp(after refresh):", payload1?.exp);
+  // 3) chama a function e envia Authorization explicitamente
+  const accessToken = refreshed.session.access_token;
+  const authHeader = `Bearer ${accessToken}`;
 
-  // 3) chama a function via invoke
   const { data, error } = await supabase.functions.invoke("create-checkout", {
     body: { plan: "pro" },
+    headers: {
+      Authorization: authHeader,
+    },
   });
 
   if (error) {
-    // erro do invoke costuma vir com status e message
     console.error("[checkout] functions.invoke error:", error);
 
-    // mensagem mais útil
-    const status = error?.status || error?.context?.status;
+    // tenta mostrar algo útil
     const msg =
       error?.message ||
       (typeof error === "string" ? error : null) ||
       "Falha ao iniciar checkout.";
 
-    // Se for JWT inválido, a correção mais comum é limpar sessão
-    if (String(msg).toLowerCase().includes("jwt") || status === 401) {
-      throw new Error(
-        `Falha de autenticação (401). Normalmente é sessão antiga/token de outro projeto. ` +
-          `Faça logout e login novamente. (Detalhe: ${msg})`
-      );
+    // Se for 401, dá dica melhor
+    if (String(msg).includes("401")) {
+      throw new Error("Falha de autenticação (401). Faça logout e login novamente.");
     }
-
-    throw new Error(`Erro ao abrir checkout: ${msg}`);
+    throw new Error(msg);
   }
 
-  // Usuário já é Pro? redireciona pro app
+  // Usuário já é Pro?
   if (data?.alreadyActive && data?.redirect) {
     window.location.href = data.redirect;
     return;
   }
 
   if (!data?.init_point) {
-    console.error("[checkout] resposta sem init_point:", data);
+    console.error("[checkout] invalid response data:", data);
     throw new Error("Resposta inválida: init_point não retornado.");
   }
 
   window.location.href = data.init_point;
 }
 
-/**
- * Depois do pagamento, o usuário volta ao app.
- * Chamando esta função, a UI fica “esperando” o webhook virar o plano para 'pro'.
- */
 export async function waitForProPlan({ timeoutMs = 120000, intervalMs = 4000 } = {}) {
   const started = Date.now();
-
-  // refresh opcional
   await supabase.auth.refreshSession().catch(() => null);
 
   const { data: { user }, error: userErr } = await supabase.auth.getUser();
@@ -134,7 +87,6 @@ export async function waitForProPlan({ timeoutMs = 120000, intervalMs = 4000 } =
       .maybeSingle();
 
     if (!error && data?.plan === "pro") return { ok: true };
-
     await new Promise((r) => setTimeout(r, intervalMs));
   }
 
