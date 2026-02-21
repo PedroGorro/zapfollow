@@ -10,7 +10,12 @@ const SB_SERVICE = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
 const APP_ORIGIN = Deno.env.get("APP_ORIGIN") ?? "https://www.zapfollow.app";
 const APP_URL = Deno.env.get("APP_URL") ?? "https://www.zapfollow.app";
 
-const MP_TOKEN = Deno.env.get("MP_ACCESS_TOKEN") ?? "";
+// ✅ Fallback para evitar confusão de nomes de secret (mantém compatibilidade)
+const MP_TOKEN =
+  Deno.env.get("MP_ACCESS_TOKEN") ??
+  Deno.env.get("MERCADOPAGO_ACCESS_TOKEN") ??
+  "";
+
 const WEBHOOK_TOKEN = Deno.env.get("MP_WEBHOOK_TOKEN") ?? "";
 
 const DEBUG = (Deno.env.get("DEBUG") ?? "").toLowerCase() === "true";
@@ -60,7 +65,8 @@ Deno.serve(async (req) => {
     dlog("ENV SUPABASE_URL exists:", !!SB_URL);
     dlog("ENV SUPABASE_ANON_KEY exists:", !!SB_ANON);
     dlog("ENV SUPABASE_SERVICE_ROLE_KEY exists:", !!SB_SERVICE);
-    dlog("ENV MP_ACCESS_TOKEN exists:", !!MP_TOKEN);
+    dlog("ENV MP token exists:", !!MP_TOKEN);
+    dlog("ENV MP token is TEST:", MP_TOKEN.startsWith("TEST-"));
     dlog("ENV MP_WEBHOOK_TOKEN exists:", !!WEBHOOK_TOKEN);
     dlog("ENV APP_ORIGIN:", APP_ORIGIN);
     dlog("ENV APP_URL:", APP_URL);
@@ -206,7 +212,21 @@ Deno.serve(async (req) => {
     }
 
     const preapprovalId = mpJson.id as string;
-    const initPoint = (mpJson.init_point || mpJson.sandbox_init_point) as string;
+
+    // ✅ FIX PRINCIPAL: não misturar prod/test
+    const isTest = MP_TOKEN.startsWith("TEST-");
+    const initPoint = (isTest ? mpJson.sandbox_init_point : mpJson.init_point) ??
+      mpJson.sandbox_init_point ??
+      mpJson.init_point;
+
+    dlog("MP isTest:", isTest);
+    dlog("MP init_point sample:", safeSample(String(mpJson.init_point ?? ""), 60));
+    dlog("MP sandbox_init_point sample:", safeSample(String(mpJson.sandbox_init_point ?? ""), 60));
+    dlog("Chosen init_point sample:", safeSample(String(initPoint ?? ""), 60));
+
+    if (!initPoint) {
+      throw new Error("Mercado Pago não retornou init_point/sandbox_init_point");
+    }
 
     await admin
       .from("subscriptions")
